@@ -114,7 +114,8 @@ class CallManager(private val appContext: Context) {
         val pc = peerConnection ?: return
         val constraints = MediaConstraints()
         pc.createOffer(object : SimpleSdpObserver() {
-            override fun onCreateSuccess(desc: SessionDescription) {
+            override fun onCreateSuccess(desc: SessionDescription?) {
+                if (desc == null) return
                 pc.setLocalDescription(SimpleSdpObserver(), desc)
                 onCreated(desc)
             }
@@ -125,7 +126,8 @@ class CallManager(private val appContext: Context) {
         val pc = peerConnection ?: return
         val constraints = MediaConstraints()
         pc.createAnswer(object : SimpleSdpObserver() {
-            override fun onCreateSuccess(desc: SessionDescription) {
+            override fun onCreateSuccess(desc: SessionDescription?) {
+                if (desc == null) return
                 pc.setLocalDescription(SimpleSdpObserver(), desc)
                 onCreated(desc)
             }
