@@ -70,5 +70,16 @@ dependencies {
     // Свой сервер на VPS: WebSocket + REST
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // Загрузка изображений (фото, стикеры) в Compose
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
+    // Запись видео-кружков (CameraX)
+    val cameraxVersion = "1.3.4"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-video:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -5,12 +5,16 @@ import com.anonchat.app.Session
 import com.anonchat.app.model.ChatMessage
 import com.anonchat.app.model.ChatSummary
 import com.anonchat.app.model.FriendInfo
+import com.anonchat.app.model.ReplyPreview
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -24,7 +28,8 @@ object ApiClient {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val JSON = "application/json; charset=utf-8".toMediaType()
@@ -99,6 +104,7 @@ object ApiClient {
             val result = ArrayList<ChatMessage>(arr.length())
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
+                val replyObj = o.optJSONObject("replyTo")
                 result.add(
                     ChatMessage(
                         id = o.optLong("id"),
@@ -106,11 +112,38 @@ object ApiClient {
                         userId = o.optString("userId"),
                         name = o.optString("name"),
                         text = o.optString("text"),
-                        timestamp = o.optLong("timestamp")
+                        timestamp = o.optLong("timestamp"),
+                        type = o.optString("type", "text"),
+                        mediaUrl = o.optStringOrNull("mediaUrl"),
+                        mediaDurationMs = o.optLong("mediaDurationMs"),
+                        replyTo = replyObj?.let {
+                            ReplyPreview(id = it.optLong("id"), name = it.optString("name"), text = it.optString("text"))
+                        },
+                        forwardedFromName = o.optStringOrNull("forwardedFromName")
                     )
                 )
             }
             return result
+        }
+    }
+
+    /** Загружает медиафайл (фото/голосовое/видео-кружок) на сервер и возвращает относительный URL вида /media/... */
+    @Throws(IOException::class)
+    fun uploadMedia(session: Session, file: File, mimeType: String): String {
+        val mediaType = mimeType.toMediaType()
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", file.name, file.asRequestBody(mediaType))
+            .build()
+        val builder = Request.Builder()
+            .url("${Config.restBaseUrl}/api/upload?id=${session.id}&token=${session.token}")
+            .post(body)
+        applySecret(builder)
+        client.newCall(builder.build()).execute().use { resp ->
+            val bodyStr = resp.body?.string() ?: "{}"
+            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}: $bodyStr")
+            val obj = JSONObject(bodyStr)
+            return obj.getString("url")
         }
     }
 

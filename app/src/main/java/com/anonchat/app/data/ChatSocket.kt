@@ -3,6 +3,7 @@ package com.anonchat.app.data
 import com.anonchat.app.Config
 import com.anonchat.app.Session
 import com.anonchat.app.model.ChatMessage
+import com.anonchat.app.model.ReplyPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import okhttp3.OkHttpClient
@@ -84,14 +85,37 @@ object ChatSocket {
         })
     }
 
-    fun sendMessage(chatId: String, name: String, text: String) {
+    /**
+     * Отправить сообщение произвольного типа.
+     * type: "text" | "sticker" | "photo" | "voice" | "video_circle"
+     */
+    fun sendMessage(
+        chatId: String,
+        name: String,
+        text: String,
+        type: String = "text",
+        mediaUrl: String? = null,
+        mediaDurationMs: Long = 0L,
+        replyTo: ReplyPreview? = null,
+        forwardedFromName: String? = null
+    ) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
+        if (trimmed.isEmpty() && mediaUrl == null) return
         val payload = JSONObject().apply {
-            put("type", "message")
+            put("type", type)
             put("chatId", chatId)
             put("name", name)
             put("text", trimmed)
+            if (mediaUrl != null) put("mediaUrl", mediaUrl)
+            if (mediaDurationMs > 0) put("mediaDurationMs", mediaDurationMs)
+            if (replyTo != null) {
+                put("replyTo", JSONObject().apply {
+                    put("id", replyTo.id)
+                    put("name", replyTo.name)
+                    put("text", replyTo.text)
+                })
+            }
+            if (forwardedFromName != null) put("forwardedFromName", forwardedFromName)
         }
         socket?.send(payload.toString())
     }
@@ -109,5 +133,12 @@ private fun JSONObject.toChatMessage(): ChatMessage = ChatMessage(
     userId = optString("userId"),
     name = optString("name"),
     text = optString("text"),
-    timestamp = optLong("timestamp")
+    timestamp = optLong("timestamp"),
+    type = optString("msgType", "text"),
+    mediaUrl = if (has("mediaUrl") && !isNull("mediaUrl")) optString("mediaUrl") else null,
+    mediaDurationMs = optLong("mediaDurationMs"),
+    replyTo = optJSONObject("replyTo")?.let {
+        ReplyPreview(id = it.optLong("id"), name = it.optString("name"), text = it.optString("text"))
+    },
+    forwardedFromName = if (has("forwardedFromName") && !isNull("forwardedFromName")) optString("forwardedFromName") else null
 )

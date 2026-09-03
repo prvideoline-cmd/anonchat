@@ -35,4 +35,10 @@ object Config {
 
     val restBaseUrl: String get() = "$httpScheme://$SERVER_HOST:$SERVER_PORT"
     val wsUrl: String get() = "$wsScheme://$SERVER_HOST:$SERVER_PORT/ws"
+
+    /** Превращает относительный путь вида "/media/123/foo.jpg" в полный URL. */
+    fun mediaUrl(relativePath: String): String {
+        if (relativePath.startsWith("http")) return relativePath
+        return "$restBaseUrl$relativePath"
+    }
 }

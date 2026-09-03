@@ -1,22 +1,17 @@
 /**
- * АнонЧат — сервер v2.
+ * АнонЧат — сервер v3.
  *
- * Теперь с аккаунтами:
- *  - Регистрация: POST /api/register {name} -> {id, token, name}
- *    id — уникальный 5-значный номер пользователя, token — секрет для авторизации.
- *  - Список чатов: GET /api/chats?id=&token=
- *    Всегда есть закреплённый общий чат ("general") + список приватных чатов с друзьями.
- *  - Добавить друга: POST /api/friends/add {id, token, friendId}
- *    Создаёт (симметрично) дружбу и приватный чат между двумя пользователями.
- *  - История сообщений: GET /api/messages?chatId=&id=&token=&limit=
- *  - Реальное время: WebSocket ws://host:port/ws?id=&token=
- *    Клиент -> сервер: {"type":"message","chatId":"...","text":"..."}
- *    Сервер -> клиент:
- *      {"type":"message","chatId":"...","id":1,"name":"...","text":"...","timestamp":...}
- *      {"type":"friend_added","chatId":"...","friend":{"id":"...","name":"..."}}
+ * Новое в этой версии:
+ *  - Автоудаление сообщений и медиафайлов старше 3 дней (раз в час).
+ *  - Загрузка медиа: POST /api/upload?id=&token=  (multipart, поле "file")
+ *    -> { url: "/media/<id>/<file>" }, отдаётся статикой на /media/...
+ *  - Сообщения теперь могут нести:
+ *      type: "text" | "sticker" | "photo" | "voice" | "video_circle"
+ *      mediaUrl, mediaDurationMs — для медиа-типов
+ *      replyTo: { id, name, text } — короткая цитата при ответе
+ *      forwardedFromName — имя автора при пересылке
  *
- * Все данные хранятся в простых файлах на диске (data/) — без внешней БД,
- * без нативных зависимостей, легко бэкапится копированием папки data/.
+ * Остальной протокол (аккаунты, друзья, приватные чаты, общий чат) — как в v2.
  */
 
 const fs = require("fs");
@@ -25,6 +20,7 @@ const crypto = require("crypto");
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
+const multer = require("multer");
 const { WebSocketServer } = require("ws");
 
 loadDotEnv(path.join(__dirname, ".env"));
@@ -32,15 +28,18 @@ loadDotEnv(path.join(__dirname, ".env"));
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const CHAT_SECRET = process.env.CHAT_SECRET || "";
 const HISTORY_LIMIT = parseInt(process.env.HISTORY_LIMIT || "500", 10);
+const MESSAGE_TTL_MS = 3 * 24 * 60 * 60 * 1000; // 3 дня
 
 const DATA_DIR = path.join(__dirname, "data");
 const CHATS_DIR = path.join(DATA_DIR, "chats");
+const MEDIA_DIR = path.join(DATA_DIR, "media");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const FRIENDS_FILE = path.join(DATA_DIR, "friends.json");
 const GENERAL_CHAT_ID = "general";
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(CHATS_DIR)) fs.mkdirSync(CHATS_DIR, { recursive: true });
+for (const dir of [DATA_DIR, CHATS_DIR, MEDIA_DIR]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
 
 // Миграция со старой версии сервера (общий чат без аккаунтов)
 const OLD_HISTORY_FILE = path.join(DATA_DIR, "messages.jsonl");
@@ -125,7 +124,7 @@ function lastMessageOf(chatId) {
   return tail.length ? tail[0] : null;
 }
 
-// nextId по каждому чату — считаем по количеству строк в файле + 1
+// nextId по каждому чату — считаем по количеству строк в файле + 1 при первом обращении
 const chatNextId = {};
 function getNextMessageId(chatId) {
   if (!(chatId in chatNextId)) {
@@ -144,15 +143,38 @@ function getNextMessageId(chatId) {
   return id;
 }
 
-function addMessage(chatId, userId, name, text) {
+const ALLOWED_TYPES = new Set(["text", "sticker", "photo", "voice", "video_circle"]);
+
+function addMessage(chatId, userId, name, fields) {
   ensureChatFile(chatId);
+
+  const type = ALLOWED_TYPES.has(fields.type) ? fields.type : "text";
   const msg = {
     id: getNextMessageId(chatId),
-    userId: userId,
+    userId,
     name: sanitizeName(name),
-    text: sanitizeText(text),
+    type,
+    text: sanitizeText(fields.text || ""),
     timestamp: Date.now(),
   };
+
+  if (fields.mediaUrl && typeof fields.mediaUrl === "string" && fields.mediaUrl.startsWith("/media/")) {
+    msg.mediaUrl = fields.mediaUrl.slice(0, 300);
+  }
+  if (fields.mediaDurationMs) {
+    msg.mediaDurationMs = Math.max(0, Math.min(600000, parseInt(fields.mediaDurationMs, 10) || 0));
+  }
+  if (fields.replyTo && typeof fields.replyTo === "object") {
+    msg.replyTo = {
+      id: fields.replyTo.id,
+      name: sanitizeName(fields.replyTo.name),
+      text: sanitizeText(String(fields.replyTo.text || "")).slice(0, 200),
+    };
+  }
+  if (fields.forwardedFromName) {
+    msg.forwardedFromName = sanitizeName(fields.forwardedFromName);
+  }
+
   fs.appendFile(chatFilePath(chatId), JSON.stringify(msg) + "\n", (err) => {
     if (err) console.error("Не удалось записать сообщение:", err);
   });
@@ -204,18 +226,56 @@ function isFriendPair(idA, idB) {
   return (friends[idA] || []).includes(idB);
 }
 
-function userChatIds(id) {
-  const list = [GENERAL_CHAT_ID];
-  for (const friendId of friends[id] || []) {
-    list.push(privateChatId(id, friendId));
+// --- Автоудаление старых сообщений и медиафайлов (раз в час) -----------
+function cleanupOld() {
+  const cutoff = Date.now() - MESSAGE_TTL_MS;
+
+  try {
+    const files = fs.readdirSync(CHATS_DIR).filter((f) => f.endsWith(".jsonl"));
+    for (const file of files) {
+      const filePath = path.join(CHATS_DIR, file);
+      const raw = fs.readFileSync(filePath, "utf8");
+      const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+      const kept = lines.filter((l) => {
+        try {
+          return JSON.parse(l).timestamp >= cutoff;
+        } catch (e) {
+          return false;
+        }
+      });
+      if (kept.length !== lines.length) {
+        fs.writeFileSync(filePath, kept.length ? kept.join("\n") + "\n" : "");
+      }
+    }
+  } catch (e) {
+    console.error("Ошибка очистки старых сообщений:", e);
   }
-  return list;
+
+  try {
+    if (fs.existsSync(MEDIA_DIR)) {
+      for (const userDir of fs.readdirSync(MEDIA_DIR)) {
+        const dirPath = path.join(MEDIA_DIR, userDir);
+        if (!fs.statSync(dirPath).isDirectory()) continue;
+        for (const file of fs.readdirSync(dirPath)) {
+          const fp = path.join(dirPath, file);
+          const stat = fs.statSync(fp);
+          if (stat.mtimeMs < cutoff) fs.unlinkSync(fp);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Ошибка очистки старых медиафайлов:", e);
+  }
 }
+
+cleanupOld();
+setInterval(cleanupOld, 60 * 60 * 1000);
 
 // --- HTTP / REST ----------------------------------------------------------
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use("/media", express.static(MEDIA_DIR));
 
 app.get("/health", (req, res) => {
   res.json({ ok: true, users: Object.keys(users).length });
@@ -321,7 +381,6 @@ app.post("/api/friends/add", (req, res) => {
   const chatId = privateChatId(auth.id, friendId);
   ensureChatFile(chatId);
 
-  // Если получатель сейчас онлайн — сразу уведомляем его о новом чате
   notifyUser(friendId, {
     type: "friend_added",
     chatId,
@@ -331,6 +390,52 @@ app.post("/api/friends/add", (req, res) => {
   res.json({
     chatId,
     friend: { id: friendId, name: users[friendId].name },
+  });
+});
+
+// --- Загрузка медиа (фото, голосовые, видео-кружки) ----------------------
+function guessExt(originalName, mime) {
+  const fromName = path.extname(originalName || "");
+  if (fromName) return fromName.toLowerCase();
+  if (!mime) return "";
+  if (mime.includes("jpeg")) return ".jpg";
+  if (mime.includes("png")) return ".png";
+  if (mime.includes("webp")) return ".webp";
+  if (mime.includes("mp4")) return ".mp4";
+  if (mime.includes("3gpp")) return ".3gp";
+  if (mime.includes("mpeg")) return ".mp3";
+  if (mime.includes("ogg")) return ".ogg";
+  if (mime.includes("mp4a") || mime.includes("m4a")) return ".m4a";
+  return "";
+}
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const userId = String(req.query.id || "misc").replace(/[^0-9]/g, "") || "misc";
+      const dir = path.join(MEDIA_DIR, userId);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = guessExt(file.originalname, file.mimetype);
+      cb(null, `${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 30 * 1024 * 1024 }, // 30 МБ на файл
+});
+
+app.post("/api/upload", (req, res) => {
+  if (!checkSecret(req.header("X-Chat-Secret"))) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  const auth = authenticate(req.query.id, req.query.token);
+  if (!auth) return res.status(401).json({ error: "invalid_auth" });
+
+  upload.single("file")(req, res, (err) => {
+    if (err) return res.status(400).json({ error: "upload_failed", detail: err.message });
+    if (!req.file) return res.status(400).json({ error: "no_file" });
+    res.json({ url: `/media/${auth.id}/${req.file.filename}` });
   });
 });
 
@@ -403,27 +508,31 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    if (parsed.type === "message") {
-      const chatId = String(parsed.chatId || GENERAL_CHAT_ID);
-      const text = sanitizeText(parsed.text);
-      if (!text) return;
+    if (parsed.type === undefined && parsed.text === undefined) return;
 
-      if (chatId !== GENERAL_CHAT_ID) {
-        const members = chatMembers(chatId);
-        if (!members || !members.includes(ws.userId) || !isFriendPair(members[0], members[1])) {
-          return; // не участник этого приватного чата
-        }
+    // Пакет от клиента с намерением отправить сообщение всегда содержит chatId
+    if (parsed.chatId === undefined) return;
+
+    const chatId = String(parsed.chatId || GENERAL_CHAT_ID);
+
+    if (chatId !== GENERAL_CHAT_ID) {
+      const members = chatMembers(chatId);
+      if (!members || !members.includes(ws.userId) || !isFriendPair(members[0], members[1])) {
+        return; // не участник этого приватного чата
       }
+    }
 
-      const msg = addMessage(chatId, ws.userId, ws.userName, text);
-      const payload = { type: "message", chatId, ...msg };
+    const msg = addMessage(chatId, ws.userId, ws.userName, parsed);
+    const payload = { type: "message", chatId, ...msg };
+    // не дублируем ключ "type" сообщения полем-обёрткой
+    payload.type = "message";
+    payload.msgType = msg.type;
 
-      if (chatId === GENERAL_CHAT_ID) {
-        broadcastAll(payload);
-      } else {
-        const members = chatMembers(chatId);
-        for (const memberId of members) notifyUser(memberId, payload);
-      }
+    if (chatId === GENERAL_CHAT_ID) {
+      broadcastAll(payload);
+    } else {
+      const members = chatMembers(chatId);
+      for (const memberId of members) notifyUser(memberId, payload);
     }
   });
 
@@ -448,7 +557,7 @@ const pingInterval = setInterval(() => {
 wss.on("close", () => clearInterval(pingInterval));
 
 server.listen(PORT, () => {
-  console.log(`АнонЧат-сервер (v2) запущен на порту ${PORT}`);
+  console.log(`АнонЧат-сервер (v3) запущен на порту ${PORT}`);
   console.log(`REST:  http://localhost:${PORT}/api/...`);
   console.log(`WS:    ws://localhost:${PORT}/ws?id=...&token=...`);
 });
