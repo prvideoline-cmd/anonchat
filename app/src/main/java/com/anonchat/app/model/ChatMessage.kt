@@ -20,5 +20,7 @@ data class ChatMessage(
     val mediaUrl: String? = null,
     val mediaDurationMs: Long = 0L,
     val replyTo: ReplyPreview? = null,
-    val forwardedFromName: String? = null
+    val forwardedFromName: String? = null,
+    // Аватар отправителя на момент отправки (может быть null, если аватара нет).
+    val avatarUrl: String? = null
 )

@@ -5,6 +5,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.anonchat.app.call.CallController
 import com.anonchat.app.data.ChatSocket
 import com.anonchat.app.data.SocketEvent
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +47,7 @@ class ConnectionService : Service() {
         }
 
         ChatSocket.connect(session)
+        CallController.attach(this, session)
 
         scope.launch {
             ChatSocket.events.collect { event ->
@@ -59,6 +61,11 @@ class ConnectionService : Service() {
                     }
                     is SocketEvent.FriendAdded -> {
                         NotificationHelper.showFriendAddedNotification(this@ConnectionService, event.friendName)
+                    }
+                    is SocketEvent.CallSignal -> {
+                        if (event.kind == "offer") {
+                            NotificationHelper.showIncomingCallNotification(this@ConnectionService, event.fromName)
+                        }
                     }
                     else -> {}
                 }

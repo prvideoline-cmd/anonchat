@@ -61,7 +61,7 @@ fun ChatListScreen(
     session: Session,
     pendingOpenChatId: String?,
     onConsumedPending: () -> Unit,
-    onOpenChat: (chatId: String, title: String) -> Unit
+    onOpenChat: (chatId: String, title: String, friendId: String?) -> Unit
 ) {
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -85,7 +85,7 @@ fun ChatListScreen(
         if (pendingOpenChatId != null) {
             val match = chats.find { it.chatId == pendingOpenChatId }
             if (match != null) {
-                onOpenChat(match.chatId, match.title)
+                onOpenChat(match.chatId, match.title, match.friend?.id)
                 onConsumedPending()
             }
         }
@@ -138,7 +138,7 @@ fun ChatListScreen(
                 )
                 else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(chats, key = { it.chatId }) { chat ->
-                        ChatListItem(chat = chat, onClick = { onOpenChat(chat.chatId, chat.title) })
+                        ChatListItem(chat = chat, onClick = { onOpenChat(chat.chatId, chat.title, chat.friend?.id) })
                         Divider()
                     }
                 }
@@ -188,7 +188,16 @@ private fun ChatListItem(chat: ChatSummary, onClick: () -> Unit) {
                 .background(if (chat.isPinned) Color(0xFF4834D4) else Color(0xFF6C5CE7)),
             contentAlignment = Alignment.Center
         ) {
-            Text(chat.title.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+            val avatarUrl = chat.friend?.avatarUrl
+            if (avatarUrl != null) {
+                coil.compose.AsyncImage(
+                    model = Config.mediaUrl(avatarUrl),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize().clip(CircleShape)
+                )
+            } else {
+                Text(chat.title.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+            }
         }
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {

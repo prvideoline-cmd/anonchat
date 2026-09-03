@@ -1,17 +1,21 @@
 /**
- * АнонЧат — сервер v3.
+ * АнонЧат — сервер v4.
  *
  * Новое в этой версии:
- *  - Автоудаление сообщений и медиафайлов старше 3 дней (раз в час).
- *  - Загрузка медиа: POST /api/upload?id=&token=  (multipart, поле "file")
- *    -> { url: "/media/<id>/<file>" }, отдаётся статикой на /media/...
- *  - Сообщения теперь могут нести:
- *      type: "text" | "sticker" | "photo" | "voice" | "video_circle"
- *      mediaUrl, mediaDurationMs — для медиа-типов
- *      replyTo: { id, name, text } — короткая цитата при ответе
- *      forwardedFromName — имя автора при пересылке
+ *  - Аватарки пользователей: POST /api/upload?id=&token=&kind=avatar
+ *    сохраняет файл и сразу привязывает его как аватар аккаунта.
+ *  - Отчёты о прочтении в приватных чатах: клиент по WS шлёт
+ *    { action: "read", chatId, upToId }, сервер запоминает и уведомляет
+ *    второго участника пакетом { type: "read_receipt", chatId, byUserId, upToId }.
+ *    Текущее состояние прочтения также отдаётся в GET /api/chats (peerReadUpTo).
+ *  - Сигналинг аудиозвонков в приватных чатах поверх WebSocket (WebRTC):
+ *    клиент шлёт { action: "call", kind: "offer"|"answer"|"ice"|"end"|"reject"|"busy", chatId, ... },
+ *    сервер пересылает второму участнику как { type: "call_signal", kind, chatId, fromUserId, fromName, ... }.
+ *    Сервер только транслирует сигналы — сам голос идёт напрямую между устройствами (P2P WebRTC).
  *
- * Остальной протокол (аккаунты, друзья, приватные чаты, общий чат) — как в v2.
+ * Из v3 остаётся: автоудаление сообщений/медиа старше 3 дней, стикеры/фото/
+ * голосовые/видео-кружки, ответы и пересылка. Из v2: аккаунты, друзья,
+ * приватные чаты, общий чат.
  */
 
 const fs = require("fs");
@@ -35,6 +39,7 @@ const CHATS_DIR = path.join(DATA_DIR, "chats");
 const MEDIA_DIR = path.join(DATA_DIR, "media");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const FRIENDS_FILE = path.join(DATA_DIR, "friends.json");
+const READ_STATE_FILE = path.join(DATA_DIR, "read_state.json");
 const GENERAL_CHAT_ID = "general";
 
 for (const dir of [DATA_DIR, CHATS_DIR, MEDIA_DIR]) {
@@ -64,8 +69,9 @@ function writeJson(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
 
-let users = readJson(USERS_FILE, {}); // { "12345": { name, token } }
+let users = readJson(USERS_FILE, {}); // { "12345": { name, token, avatarUrl } }
 let friends = readJson(FRIENDS_FILE, {}); // { "12345": ["67890", ...] }
+let readState = readJson(READ_STATE_FILE, {}); // { chatId: { "12345": lastReadMessageId } }
 
 function saveUsers() {
   writeJson(USERS_FILE, users);
@@ -73,6 +79,15 @@ function saveUsers() {
 
 function saveFriends() {
   writeJson(FRIENDS_FILE, friends);
+}
+
+let readStateSaveTimer = null;
+function saveReadStateSoon() {
+  if (readStateSaveTimer) return;
+  readStateSaveTimer = setTimeout(() => {
+    readStateSaveTimer = null;
+    writeJson(READ_STATE_FILE, readState);
+  }, 2000);
 }
 
 function generateUserId() {
@@ -157,6 +172,9 @@ function addMessage(chatId, userId, name, fields) {
     text: sanitizeText(fields.text || ""),
     timestamp: Date.now(),
   };
+
+  const senderAvatar = users[userId] && users[userId].avatarUrl;
+  if (senderAvatar) msg.avatarUrl = senderAvatar;
 
   if (fields.mediaUrl && typeof fields.mediaUrl === "string" && fields.mediaUrl.startsWith("/media/")) {
     msg.mediaUrl = fields.mediaUrl.slice(0, 300);
@@ -259,7 +277,9 @@ function cleanupOld() {
         for (const file of fs.readdirSync(dirPath)) {
           const fp = path.join(dirPath, file);
           const stat = fs.statSync(fp);
-          if (stat.mtimeMs < cutoff) fs.unlinkSync(fp);
+          // не трогаем текущий аватар пользователя, даже если он "старый"
+          const isAvatar = users[userDir] && users[userDir].avatarUrl === `/media/${userDir}/${file}`;
+          if (!isAvatar && stat.mtimeMs < cutoff) fs.unlinkSync(fp);
         }
       }
     }
@@ -290,10 +310,10 @@ app.post("/api/register", (req, res) => {
 
   const id = generateUserId();
   const token = generateToken();
-  users[id] = { name, token };
+  users[id] = { name, token, avatarUrl: null };
   saveUsers();
 
-  res.json({ id, token, name });
+  res.json({ id, token, name, avatarUrl: null });
 });
 
 app.get("/api/chats", (req, res) => {
@@ -310,17 +330,19 @@ app.get("/api/chats", (req, res) => {
     .map((fid) => {
       const chatId = privateChatId(auth.id, fid);
       const last = lastMessageOf(chatId);
+      const peerReadUpTo = (readState[chatId] && readState[chatId][fid]) || 0;
       return {
         chatId,
-        friend: { id: fid, name: users[fid].name },
+        friend: { id: fid, name: users[fid].name, avatarUrl: users[fid].avatarUrl || null },
         lastMessage: last ? last.text : null,
         lastTimestamp: last ? last.timestamp : 0,
+        peerReadUpTo,
       };
     })
     .sort((a, b) => b.lastTimestamp - a.lastTimestamp);
 
   res.json({
-    me: { id: auth.id, name: auth.name },
+    me: { id: auth.id, name: auth.name, avatarUrl: (users[auth.id] && users[auth.id].avatarUrl) || null },
     general: {
       chatId: GENERAL_CHAT_ID,
       name: "Общий чат",
@@ -393,7 +415,7 @@ app.post("/api/friends/add", (req, res) => {
   });
 });
 
-// --- Загрузка медиа (фото, голосовые, видео-кружки) ----------------------
+// --- Загрузка медиа (фото, голосовые, видео-кружки, аватарки) ------------
 function guessExt(originalName, mime) {
   const fromName = path.extname(originalName || "");
   if (fromName) return fromName.toLowerCase();
@@ -435,7 +457,15 @@ app.post("/api/upload", (req, res) => {
   upload.single("file")(req, res, (err) => {
     if (err) return res.status(400).json({ error: "upload_failed", detail: err.message });
     if (!req.file) return res.status(400).json({ error: "no_file" });
-    res.json({ url: `/media/${auth.id}/${req.file.filename}` });
+
+    const url = `/media/${auth.id}/${req.file.filename}`;
+
+    if (req.query.kind === "avatar" && users[auth.id]) {
+      users[auth.id].avatarUrl = url;
+      saveUsers();
+    }
+
+    res.json({ url });
   });
 });
 
@@ -475,6 +505,12 @@ function chatMembers(chatId) {
   return [parts[1], parts[2]];
 }
 
+function otherMember(chatId, myId) {
+  const members = chatMembers(chatId);
+  if (!members) return null;
+  return members.find((m) => m !== myId) || null;
+}
+
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const secret = req.headers["x-chat-secret"] || url.searchParams.get("secret");
@@ -505,6 +541,49 @@ wss.on("connection", (ws, req) => {
     try {
       parsed = JSON.parse(data.toString());
     } catch (e) {
+      return;
+    }
+
+    // --- Отчёт о прочтении -------------------------------------------
+    if (parsed.action === "read") {
+      const chatId = String(parsed.chatId || "");
+      const upToId = parseInt(parsed.upToId, 10) || 0;
+      if (!chatId || chatId === GENERAL_CHAT_ID || upToId <= 0) return;
+      const members = chatMembers(chatId);
+      if (!members || !members.includes(ws.userId)) return;
+
+      readState[chatId] = readState[chatId] || {};
+      const prev = readState[chatId][ws.userId] || 0;
+      if (upToId > prev) {
+        readState[chatId][ws.userId] = upToId;
+        saveReadStateSoon();
+        const peer = otherMember(chatId, ws.userId);
+        if (peer) {
+          notifyUser(peer, { type: "read_receipt", chatId, byUserId: ws.userId, upToId });
+        }
+      }
+      return;
+    }
+
+    // --- Сигналинг звонков (WebRTC, только приватные чаты) -----------
+    if (parsed.action === "call") {
+      const chatId = String(parsed.chatId || "");
+      const kind = String(parsed.kind || "");
+      if (!chatId || chatId === GENERAL_CHAT_ID) return;
+      const members = chatMembers(chatId);
+      if (!members || !members.includes(ws.userId) || !isFriendPair(members[0], members[1])) return;
+      const peer = otherMember(chatId, ws.userId);
+      if (!peer) return;
+
+      notifyUser(peer, {
+        type: "call_signal",
+        kind,
+        chatId,
+        fromUserId: ws.userId,
+        fromName: ws.userName,
+        sdp: parsed.sdp,
+        candidate: parsed.candidate,
+      });
       return;
     }
 
@@ -557,7 +636,7 @@ const pingInterval = setInterval(() => {
 wss.on("close", () => clearInterval(pingInterval));
 
 server.listen(PORT, () => {
-  console.log(`АнонЧат-сервер (v3) запущен на порту ${PORT}`);
+  console.log(`АнонЧат-сервер (v4) запущен на порту ${PORT}`);
   console.log(`REST:  http://localhost:${PORT}/api/...`);
   console.log(`WS:    ws://localhost:${PORT}/ws?id=...&token=...`);
 });

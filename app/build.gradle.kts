@@ -81,5 +81,8 @@ dependencies {
     implementation("androidx.camera:camera-video:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
 
+    // Аудиозвонки (WebRTC)
+    implementation("io.getstream:stream-webrtc-android:1.1.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

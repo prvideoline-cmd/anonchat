@@ -90,7 +90,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
 import coil.compose.AsyncImage
+import com.anonchat.app.call.CallController
 import com.anonchat.app.data.ApiClient
 import com.anonchat.app.data.ChatSocket
 import com.anonchat.app.data.SocketEvent
@@ -112,14 +116,17 @@ import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatScreen(session: Session, chatId: String, title: String, onBack: () -> Unit) {
+fun ChatScreen(session: Session, chatId: String, title: String, friendId: String?, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val isPrivateChat = friendId != null
 
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    // Сколько сообщений (по id) прочитал собеседник в этом приватном чате — для галочек.
+    var peerReadUpTo by remember { mutableStateOf(0L) }
 
     var replyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
@@ -128,19 +135,42 @@ fun ChatScreen(session: Session, chatId: String, title: String, onBack: () -> Un
 
     BackHandler(onBack = onBack)
 
+    fun markReadUpToLatest(list: List<ChatMessage>) {
+        if (!isPrivateChat) return
+        val lastId = list.maxOfOrNull { it.id } ?: return
+        ChatSocket.sendRead(chatId, lastId)
+    }
+
     LaunchedEffect(chatId) {
         try {
             messages = withContext(Dispatchers.IO) { ApiClient.fetchMessages(session, chatId) }
+            markReadUpToLatest(messages)
         } catch (e: Exception) {
             // покажем то, что придёт по сокету дальше
         }
         loading = false
+
+        if (isPrivateChat) {
+            try {
+                val chats = withContext(Dispatchers.IO) { ApiClient.fetchChats(session) }
+                peerReadUpTo = chats.find { it.chatId == chatId }?.peerReadUpTo ?: 0L
+            } catch (e: Exception) {
+                // не критично — обновится по сокету при следующем прочтении собеседником
+            }
+        }
     }
 
     LaunchedEffect(chatId) {
         ChatSocket.events.collect { event ->
-            if (event is SocketEvent.NewMessage && event.message.chatId == chatId) {
-                messages = messages + event.message
+            when {
+                event is SocketEvent.NewMessage && event.message.chatId == chatId -> {
+                    messages = messages + event.message
+                    if (event.message.userId != session.id) markReadUpToLatest(messages)
+                }
+                event is SocketEvent.ReadReceipt && event.chatId == chatId -> {
+                    if (event.upToId > peerReadUpTo) peerReadUpTo = event.upToId
+                }
+                else -> {}
             }
         }
     }
@@ -212,6 +242,13 @@ fun ChatScreen(session: Session, chatId: String, title: String, onBack: () -> Un
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = Color.White)
                     }
                 },
+                actions = {
+                    if (isPrivateChat) {
+                        IconButton(onClick = { CallController.startCall(chatId, friendId!!, title) }) {
+                            Icon(Icons.Filled.Call, contentDescription = "Позвонить", tint = Color.White)
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = Color.White
@@ -240,6 +277,7 @@ fun ChatScreen(session: Session, chatId: String, title: String, onBack: () -> Un
                         MessageBubble(
                             msg = msg,
                             isMe = msg.userId == session.id,
+                            isRead = isPrivateChat && msg.id <= peerReadUpTo,
                             onReply = { replyTarget = msg },
                             onForward = { forwardTarget = msg }
                         )
@@ -325,7 +363,7 @@ private fun copyUriToCache(context: android.content.Context, uri: Uri, prefix: S
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(msg: ChatMessage, isMe: Boolean, onReply: (ChatMessage) -> Unit, onForward: (ChatMessage) -> Unit) {
+private fun MessageBubble(msg: ChatMessage, isMe: Boolean, isRead: Boolean, onReply: (ChatMessage) -> Unit, onForward: (ChatMessage) -> Unit) {
     val bubbleColor = if (isMe) Color(0xFF6C5CE7) else Color.White
     val textColor = if (isMe) Color.White else Color.Black
     val alignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
@@ -398,12 +436,22 @@ private fun MessageBubble(msg: ChatMessage, isMe: Boolean, onReply: (ChatMessage
 
                         MessageContent(msg = msg, textColor = textColor)
 
-                        Text(
-                            text = formatTime(msg.timestamp),
-                            color = textColor.copy(alpha = 0.6f),
-                            fontSize = 10.sp,
-                            modifier = Modifier.align(Alignment.End)
-                        )
+                        Row(modifier = Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = formatTime(msg.timestamp),
+                                color = textColor.copy(alpha = 0.6f),
+                                fontSize = 10.sp
+                            )
+                            if (isMe) {
+                                Spacer(Modifier.width(3.dp))
+                                Icon(
+                                    if (isRead) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                    contentDescription = if (isRead) "Прочитано" else "Отправлено",
+                                    tint = if (isRead) Color(0xFF4FC3F7) else textColor.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -702,12 +750,17 @@ private fun MessageInputBar(
                         }
                     )
 
-                    FilledIconButton(
-                        onClick = {},
-                        modifier = holdModifier,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = if (isRecordingVoice || isRecordingVideo) Color.Red else Color(0xFF6C5CE7)
-                        )
+                    // Обычная кнопка (FilledIconButton) тут не подходит: её собственный
+                    // clickable перехватывает нажатие раньше нашего pointerInput и
+                    // удержание никогда не срабатывает. Поэтому используем простой Box
+                    // без встроенной обработки кликов — жест обрабатывает только holdModifier.
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(if (isRecordingVoice || isRecordingVideo) Color.Red else Color(0xFF6C5CE7))
+                            .then(holdModifier),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             if (iconMode == "mic") Icons.Filled.Mic else Icons.Filled.Camera,

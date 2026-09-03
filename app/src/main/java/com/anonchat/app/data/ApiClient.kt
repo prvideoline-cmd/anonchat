@@ -47,7 +47,12 @@ object ApiClient {
             val bodyStr = resp.body?.string() ?: "{}"
             if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}: $bodyStr")
             val obj = JSONObject(bodyStr)
-            return Session(obj.getString("id"), obj.getString("name"), obj.getString("token"))
+            return Session(
+                obj.getString("id"),
+                obj.getString("name"),
+                obj.getString("token"),
+                obj.optStringOrNull("avatarUrl")
+            )
         }
     }
 
@@ -84,7 +89,8 @@ object ApiClient {
                         isPinned = false,
                         lastMessage = item.optStringOrNull("lastMessage"),
                         lastTimestamp = item.optLong("lastTimestamp"),
-                        friend = FriendInfo(friendObj.optString("id"), friendObj.optString("name"))
+                        friend = FriendInfo(friendObj.optString("id"), friendObj.optString("name"), friendObj.optStringOrNull("avatarUrl")),
+                        peerReadUpTo = item.optLong("peerReadUpTo")
                     )
                 )
             }
@@ -119,7 +125,8 @@ object ApiClient {
                         replyTo = replyObj?.let {
                             ReplyPreview(id = it.optLong("id"), name = it.optString("name"), text = it.optString("text"))
                         },
-                        forwardedFromName = o.optStringOrNull("forwardedFromName")
+                        forwardedFromName = o.optStringOrNull("forwardedFromName"),
+                        avatarUrl = o.optStringOrNull("avatarUrl")
                     )
                 )
             }
@@ -127,17 +134,21 @@ object ApiClient {
         }
     }
 
-    /** Загружает медиафайл (фото/голосовое/видео-кружок) на сервер и возвращает относительный URL вида /media/... */
+    /**
+     * Загружает медиафайл (фото/голосовое/видео-кружок/аватар) на сервер и возвращает
+     * относительный URL вида /media/... . [kind] = "avatar" дополнительно сохраняет файл
+     * как аватар текущего аккаунта на сервере.
+     */
     @Throws(IOException::class)
-    fun uploadMedia(session: Session, file: File, mimeType: String): String {
+    fun uploadMedia(session: Session, file: File, mimeType: String, kind: String? = null): String {
         val mediaType = mimeType.toMediaType()
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("file", file.name, file.asRequestBody(mediaType))
             .build()
-        val builder = Request.Builder()
-            .url("${Config.restBaseUrl}/api/upload?id=${session.id}&token=${session.token}")
-            .post(body)
+        var url = "${Config.restBaseUrl}/api/upload?id=${session.id}&token=${session.token}"
+        if (kind != null) url += "&kind=$kind"
+        val builder = Request.Builder().url(url).post(body)
         applySecret(builder)
         client.newCall(builder.build()).execute().use { resp ->
             val bodyStr = resp.body?.string() ?: "{}"
@@ -165,7 +176,7 @@ object ApiClient {
                 val friendObj = obj.getJSONObject("friend")
                 FriendAddResult.Success(
                     chatId = obj.getString("chatId"),
-                    friend = FriendInfo(friendObj.getString("id"), friendObj.getString("name"))
+                    friend = FriendInfo(friendObj.getString("id"), friendObj.getString("name"), friendObj.optStringOrNull("avatarUrl"))
                 )
             }
         } catch (e: IOException) {

@@ -59,6 +59,30 @@ object NotificationHelper {
         notifySafely(context, notification)
     }
 
+    fun showIncomingCallNotification(context: Context, callerName: String) {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            "call".hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+            .setContentTitle("Входящий звонок")
+            .setContentText("$callerName вам звонит — откройте приложение, чтобы ответить")
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .build()
+
+        notifySafely(context, notification)
+    }
+
     fun showFriendAddedNotification(context: Context, friendName: String) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
             .setContentTitle("Новый друг")

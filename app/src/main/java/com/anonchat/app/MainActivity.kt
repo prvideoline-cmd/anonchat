@@ -12,6 +12,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -19,15 +20,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.anonchat.app.call.CallController
+import com.anonchat.app.call.CallOverlay
 
 class MainActivity : ComponentActivity() {
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* результат нам не важен */ }
 
+    // Микрофон и камера нужны сразу — для голосовых сообщений, видео-кружков и звонков.
+    private val mediaPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { /* результат нам не важен, переспросим при попытке использовать */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNotificationPermissionIfNeeded()
+        requestMediaPermissionsIfNeeded()
 
         val openChatId = intent?.getStringExtra("openChatId")
         setContent {
@@ -57,6 +65,15 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun requestMediaPermissionsIfNeeded() {
+        val needed = listOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA).filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isNotEmpty()) {
+            mediaPermissionLauncher.launch(needed.toTypedArray())
+        }
+    }
 }
 
 @Composable
@@ -72,7 +89,7 @@ fun AnonChatTheme(content: @Composable () -> Unit) {
 private sealed class Screen {
     object NameEntry : Screen()
     object ChatList : Screen()
-    data class Chat(val chatId: String, val title: String) : Screen()
+    data class Chat(val chatId: String, val title: String, val friendId: String?) : Screen()
 }
 
 @Composable
@@ -86,8 +103,11 @@ private fun AppRoot(initialOpenChatId: String?) {
         val current = session
         if (current != null) {
             ContextCompat.startForegroundService(context, Intent(context, ConnectionService::class.java))
+            CallController.attach(context, current)
         }
     }
+
+    val callState by CallController.callState.collectAsState()
 
     when (val current = screen) {
         is Screen.NameEntry -> NameEntryScreen(onRegistered = { newSession ->
@@ -103,9 +123,9 @@ private fun AppRoot(initialOpenChatId: String?) {
                     session = activeSession,
                     pendingOpenChatId = pendingChatId,
                     onConsumedPending = { pendingChatId = null },
-                    onOpenChat = { chatId, title ->
+                    onOpenChat = { chatId, title, friendId ->
                         ConnectionService.openChatId = chatId
-                        screen = Screen.Chat(chatId, title)
+                        screen = Screen.Chat(chatId, title, friendId)
                     }
                 )
             }
@@ -118,6 +138,7 @@ private fun AppRoot(initialOpenChatId: String?) {
                     session = activeSession,
                     chatId = current.chatId,
                     title = current.title,
+                    friendId = current.friendId,
                     onBack = {
                         ConnectionService.openChatId = null
                         screen = Screen.ChatList
@@ -125,5 +146,9 @@ private fun AppRoot(initialOpenChatId: String?) {
                 )
             }
         }
+    }
+
+    callState?.let { state ->
+        CallOverlay(state = state)
     }
 }

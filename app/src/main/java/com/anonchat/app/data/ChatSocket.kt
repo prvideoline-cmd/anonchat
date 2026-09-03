@@ -18,6 +18,18 @@ sealed class SocketEvent {
     data class NewMessage(val message: ChatMessage) : SocketEvent()
     data class FriendAdded(val chatId: String, val friendId: String, val friendName: String) : SocketEvent()
     data class ConnectionState(val connected: Boolean, val info: String? = null) : SocketEvent()
+    data class ReadReceipt(val chatId: String, val byUserId: String, val upToId: Long) : SocketEvent()
+    data class CallSignal(
+        val kind: String, // "offer" | "answer" | "ice" | "end" | "reject" | "busy"
+        val chatId: String,
+        val fromUserId: String,
+        val fromName: String,
+        val sdp: String? = null,
+        val sdpType: String? = null,
+        val candidate: String? = null,
+        val sdpMid: String? = null,
+        val sdpMLineIndex: Int? = null
+    ) : SocketEvent()
 }
 
 /**
@@ -66,6 +78,32 @@ object ChatSocket {
                                     chatId = obj.optString("chatId"),
                                     friendId = friend?.optString("id") ?: "",
                                     friendName = friend?.optString("name") ?: ""
+                                )
+                            )
+                        }
+                        "read_receipt" -> {
+                            _events.tryEmit(
+                                SocketEvent.ReadReceipt(
+                                    chatId = obj.optString("chatId"),
+                                    byUserId = obj.optString("byUserId"),
+                                    upToId = obj.optLong("upToId")
+                                )
+                            )
+                        }
+                        "call_signal" -> {
+                            val sdpObj = obj.optJSONObject("sdp")
+                            val candObj = obj.optJSONObject("candidate")
+                            _events.tryEmit(
+                                SocketEvent.CallSignal(
+                                    kind = obj.optString("kind"),
+                                    chatId = obj.optString("chatId"),
+                                    fromUserId = obj.optString("fromUserId"),
+                                    fromName = obj.optString("fromName"),
+                                    sdp = sdpObj?.optString("sdp"),
+                                    sdpType = sdpObj?.optString("type"),
+                                    candidate = candObj?.optString("candidate"),
+                                    sdpMid = candObj?.optString("sdpMid"),
+                                    sdpMLineIndex = if (candObj != null && candObj.has("sdpMLineIndex")) candObj.optInt("sdpMLineIndex") else null
                                 )
                             )
                         }
@@ -120,6 +158,48 @@ object ChatSocket {
         socket?.send(payload.toString())
     }
 
+    /** Сообщает серверу, что мы прочитали сообщения в приватном чате [chatId] до id [upToId] включительно. */
+    fun sendRead(chatId: String, upToId: Long) {
+        if (upToId <= 0) return
+        val payload = JSONObject().apply {
+            put("action", "read")
+            put("chatId", chatId)
+            put("upToId", upToId)
+        }
+        socket?.send(payload.toString())
+    }
+
+    /** Отправить сигнал звонка (offer/answer/ice/end/reject/busy) собеседнику приватного чата. */
+    fun sendCallSignal(
+        chatId: String,
+        kind: String,
+        sdp: String? = null,
+        sdpType: String? = null,
+        candidate: String? = null,
+        sdpMid: String? = null,
+        sdpMLineIndex: Int? = null
+    ) {
+        val payload = JSONObject().apply {
+            put("action", "call")
+            put("kind", kind)
+            put("chatId", chatId)
+            if (sdp != null) {
+                put("sdp", JSONObject().apply {
+                    put("sdp", sdp)
+                    put("type", sdpType ?: "")
+                })
+            }
+            if (candidate != null) {
+                put("candidate", JSONObject().apply {
+                    put("candidate", candidate)
+                    put("sdpMid", sdpMid ?: "")
+                    put("sdpMLineIndex", sdpMLineIndex ?: 0)
+                })
+            }
+        }
+        socket?.send(payload.toString())
+    }
+
     fun disconnect() {
         socket?.close(1000, "bye")
         socket = null
@@ -140,5 +220,6 @@ private fun JSONObject.toChatMessage(): ChatMessage = ChatMessage(
     replyTo = optJSONObject("replyTo")?.let {
         ReplyPreview(id = it.optLong("id"), name = it.optString("name"), text = it.optString("text"))
     },
-    forwardedFromName = if (has("forwardedFromName") && !isNull("forwardedFromName")) optString("forwardedFromName") else null
+    forwardedFromName = if (has("forwardedFromName") && !isNull("forwardedFromName")) optString("forwardedFromName") else null,
+    avatarUrl = if (has("avatarUrl") && !isNull("avatarUrl")) optString("avatarUrl") else null
 )
