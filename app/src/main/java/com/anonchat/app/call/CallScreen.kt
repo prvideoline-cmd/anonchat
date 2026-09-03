@@ -64,7 +64,7 @@ fun CallOverlay(state: CallUiState) {
             Box(
                 modifier = Modifier
                     .size(120.dp)
-                    .background(Color(0xFF6C5CE7), CircleShape),
+                    .background(Color(0xFF5B5FEF), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(Icons.Filled.Person, contentDescription = null, tint = Color.White, modifier = Modifier.size(56.dp))

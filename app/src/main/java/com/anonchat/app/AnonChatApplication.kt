@@ -1,6 +1,7 @@
 package com.anonchat.app
 
 import android.app.Application
+import com.anonchat.app.media.SoundPlayer
 
 class AnonChatApplication : Application() {
 
@@ -12,5 +13,6 @@ class AnonChatApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        SoundPlayer.init(this)
     }
 }

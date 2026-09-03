@@ -19,6 +19,7 @@ sealed class SocketEvent {
     data class FriendAdded(val chatId: String, val friendId: String, val friendName: String) : SocketEvent()
     data class ConnectionState(val connected: Boolean, val info: String? = null) : SocketEvent()
     data class ReadReceipt(val chatId: String, val byUserId: String, val upToId: Long) : SocketEvent()
+    data class MessageDeleted(val chatId: String, val messageId: Long) : SocketEvent()
     data class CallSignal(
         val kind: String, // "offer" | "answer" | "ice" | "end" | "reject" | "busy"
         val chatId: String,
@@ -90,6 +91,14 @@ object ChatSocket {
                                 )
                             )
                         }
+                        "message_deleted" -> {
+                            _events.tryEmit(
+                                SocketEvent.MessageDeleted(
+                                    chatId = obj.optString("chatId"),
+                                    messageId = obj.optLong("messageId")
+                                )
+                            )
+                        }
                         "call_signal" -> {
                             val sdpObj = obj.optJSONObject("sdp")
                             val candObj = obj.optJSONObject("candidate")
@@ -154,6 +163,16 @@ object ChatSocket {
                 })
             }
             if (forwardedFromName != null) put("forwardedFromName", forwardedFromName)
+        }
+        socket?.send(payload.toString())
+    }
+
+    /** Просит сервер удалить сообщение [messageId] в чате [chatId] "для всех" (только для автора сообщения). */
+    fun sendDeleteMessage(chatId: String, messageId: Long) {
+        val payload = JSONObject().apply {
+            put("action", "delete_message")
+            put("chatId", chatId)
+            put("messageId", messageId)
         }
         socket?.send(payload.toString())
     }

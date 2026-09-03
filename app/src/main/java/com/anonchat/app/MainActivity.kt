@@ -79,9 +79,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AnonChatTheme(content: @Composable () -> Unit) {
     val colors = lightColorScheme(
-        primary = Color(0xFF6C5CE7),
-        secondary = Color(0xFF4834D4),
-        background = Color(0xFFF5F3FF)
+        primary = Color(0xFF5B5FEF),
+        onPrimary = Color.White,
+        secondary = Color(0xFF484BD8),
+        background = Color(0xFFE9EAF0),
+        surface = Color(0xFFF7F7FA),
+        surfaceVariant = Color(0xFFEDEEFF),
+        onBackground = Color(0xFF151821),
+        onSurface = Color(0xFF151821),
+        outline = Color(0xFFE5E7EE)
     )
     MaterialTheme(colorScheme = colors, content = content)
 }

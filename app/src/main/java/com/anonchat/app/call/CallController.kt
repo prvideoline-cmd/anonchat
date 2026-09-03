@@ -4,6 +4,7 @@ import android.content.Context
 import com.anonchat.app.Session
 import com.anonchat.app.data.ChatSocket
 import com.anonchat.app.data.SocketEvent
+import com.anonchat.app.media.SoundPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +37,7 @@ object CallController {
     private var manager: CallManager? = null
     private var attached = false
     private var mySession: Session? = null
+    private var appContext: Context? = null
 
     private var pendingOfferSdp: String? = null
     private val pendingCandidates = mutableListOf<IceCandidate>()
@@ -46,6 +48,7 @@ object CallController {
 
     fun attach(context: Context, session: Session) {
         mySession = session
+        appContext = context.applicationContext
         if (attached) return
         attached = true
         manager = CallManager(context.applicationContext).apply { initialize() }
@@ -74,6 +77,7 @@ object CallController {
                     state = CallState.RINGING_INCOMING,
                     isIncoming = true
                 )
+                appContext?.let { SoundPlayer.startRinging(it) }
             }
             "answer" -> {
                 val sdp = event.sdp ?: return
@@ -134,6 +138,7 @@ object CallController {
         val st = _callState.value ?: return
         val offer = pendingOfferSdp ?: return
         val mgr = manager ?: return
+        SoundPlayer.stopRinging()
 
         mgr.createPeerConnection(
             onLocalIceCandidate = { cand ->
@@ -174,6 +179,7 @@ object CallController {
 
     private fun cleanupLocal() {
         manager?.close()
+        SoundPlayer.stopRinging()
         pendingOfferSdp = null
         pendingCandidates.clear()
         remoteDescriptionSet = false

@@ -13,6 +13,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -64,6 +65,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -91,11 +93,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material3.TextButton
 import coil.compose.AsyncImage
 import com.anonchat.app.call.CallController
 import com.anonchat.app.data.ApiClient
+import com.anonchat.app.data.LocalDeletedStore
+import com.anonchat.app.media.SoundPlayer
 import com.anonchat.app.data.ChatSocket
 import com.anonchat.app.data.SocketEvent
 import com.anonchat.app.media.Stickers
@@ -130,8 +136,10 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
 
     var replyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var deleteTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var showStickerPicker by remember { mutableStateOf(false) }
     var uploading by remember { mutableStateOf(false) }
+    var hiddenIds by remember { mutableStateOf(LocalDeletedStore.hiddenIds(context, chatId)) }
 
     BackHandler(onBack = onBack)
 
@@ -165,10 +173,16 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
             when {
                 event is SocketEvent.NewMessage && event.message.chatId == chatId -> {
                     messages = messages + event.message
-                    if (event.message.userId != session.id) markReadUpToLatest(messages)
+                    if (event.message.userId != session.id) {
+                        markReadUpToLatest(messages)
+                        SoundPlayer.playReceived()
+                    }
                 }
                 event is SocketEvent.ReadReceipt && event.chatId == chatId -> {
                     if (event.upToId > peerReadUpTo) peerReadUpTo = event.upToId
+                }
+                event is SocketEvent.MessageDeleted && event.chatId == chatId -> {
+                    messages = messages.filter { it.id != event.messageId }
                 }
                 else -> {}
             }
@@ -188,12 +202,14 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
             type = "text",
             replyTo = replyTarget?.let { ReplyPreview(id = it.id, name = it.name, text = it.text.ifBlank { mediaLabel(it.type) }) }
         )
+        SoundPlayer.playSent()
         input = ""
         replyTarget = null
     }
 
     fun sendSticker(emoji: String) {
         ChatSocket.sendMessage(chatId = chatId, name = session.name, text = emoji, type = "sticker")
+        SoundPlayer.playSent()
         showStickerPicker = false
     }
 
@@ -211,6 +227,7 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
                     mediaDurationMs = durationMs,
                     replyTo = replyTarget?.let { ReplyPreview(id = it.id, name = it.name, text = it.text.ifBlank { mediaLabel(it.type) }) }
                 )
+                SoundPlayer.playSent()
                 replyTarget = null
             } catch (e: Exception) {
                 // не удалось отправить медиа — молча игнорируем, можно повторить
@@ -219,6 +236,16 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
                 file.delete()
             }
         }
+    }
+
+    fun deleteForMe(msg: ChatMessage) {
+        LocalDeletedStore.hide(context, chatId, msg.id)
+        hiddenIds = hiddenIds + msg.id
+    }
+
+    fun deleteForEveryone(msg: ChatMessage) {
+        ChatSocket.sendDeleteMessage(chatId, msg.id)
+        messages = messages.filter { it.id != msg.id }
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -234,24 +261,32 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
 
     Scaffold(
         modifier = Modifier.imePadding(),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text(title, fontWeight = FontWeight.Bold) },
+                title = {
+                    Column {
+                        Text(title, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = MaterialTheme.colorScheme.onBackground)
+                        if (isPrivateChat) {
+                            Text("в сети", fontSize = 11.sp, color = Color(0xFF25B77A))
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = Color.White)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = MaterialTheme.colorScheme.primary)
                     }
                 },
                 actions = {
                     if (isPrivateChat) {
                         IconButton(onClick = { CallController.startCall(chatId, friendId!!, title) }) {
-                            Icon(Icons.Filled.Call, contentDescription = "Позвонить", tint = Color.White)
+                            Icon(Icons.Filled.Call, contentDescription = "Позвонить", tint = MaterialTheme.colorScheme.primary)
                         }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }
@@ -267,19 +302,21 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
                     CircularProgressIndicator()
                 }
             } else {
+                val visibleMessages = messages.filter { it.id !in hiddenIds }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(messages, key = { _, m -> "${m.chatId}_${m.id}_${m.timestamp}" }) { _, msg ->
+                    itemsIndexed(visibleMessages, key = { _, m -> "${m.chatId}_${m.id}_${m.timestamp}" }) { _, msg ->
                         MessageBubble(
                             msg = msg,
                             isMe = msg.userId == session.id,
                             isRead = isPrivateChat && msg.id <= peerReadUpTo,
                             onReply = { replyTarget = msg },
-                            onForward = { forwardTarget = msg }
+                            onForward = { forwardTarget = msg },
+                            onDelete = { deleteTarget = msg }
                         )
                     }
                 }
@@ -338,6 +375,15 @@ fun ChatScreen(session: Session, chatId: String, title: String, friendId: String
             }
         )
     }
+
+    deleteTarget?.let { msg ->
+        DeleteMessageDialog(
+            canDeleteForEveryone = msg.userId == session.id,
+            onDismiss = { deleteTarget = null },
+            onDeleteForMe = { deleteForMe(msg); deleteTarget = null },
+            onDeleteForEveryone = { deleteForEveryone(msg); deleteTarget = null }
+        )
+    }
 }
 
 private fun mediaLabel(type: String): String = when (type) {
@@ -363,9 +409,9 @@ private fun copyUriToCache(context: android.content.Context, uri: Uri, prefix: S
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(msg: ChatMessage, isMe: Boolean, isRead: Boolean, onReply: (ChatMessage) -> Unit, onForward: (ChatMessage) -> Unit) {
-    val bubbleColor = if (isMe) Color(0xFF6C5CE7) else Color.White
-    val textColor = if (isMe) Color.White else Color.Black
+private fun MessageBubble(msg: ChatMessage, isMe: Boolean, isRead: Boolean, onReply: (ChatMessage) -> Unit, onForward: (ChatMessage) -> Unit, onDelete: (ChatMessage) -> Unit) {
+    val bubbleColor = if (isMe) Color(0xFF5B5FEF) else Color.White
+    val textColor = if (isMe) Color.White else Color(0xFF151821)
     val alignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
 
     val offsetX = remember { Animatable(0f) }
@@ -416,7 +462,13 @@ private fun MessageBubble(msg: ChatMessage, isMe: Boolean, isRead: Boolean, onRe
                 )
             }
             Box {
-                Surface(color = if (msg.type == "sticker") Color.Transparent else bubbleColor, shape = RoundedCornerShape(16.dp), shadowElevation = if (msg.type == "sticker") 0.dp else 1.dp) {
+                val bubbleShape = if (msg.type == "sticker") RoundedCornerShape(16.dp) else RoundedCornerShape(
+                    topStart = 20.dp,
+                    topEnd = 20.dp,
+                    bottomStart = if (isMe) 20.dp else 7.dp,
+                    bottomEnd = if (isMe) 7.dp else 20.dp
+                )
+                Surface(color = if (msg.type == "sticker") Color.Transparent else bubbleColor, shape = bubbleShape, shadowElevation = if (msg.type == "sticker") 0.dp else 1.dp) {
                     Column(modifier = Modifier.padding(if (msg.type == "sticker") 4.dp else 14.dp, if (msg.type == "sticker") 4.dp else 8.dp)) {
                         msg.forwardedFromName?.let {
                             Text("Переслано от $it", fontSize = 11.sp, fontStyle = FontStyle.Italic, color = textColor.copy(alpha = 0.7f))
@@ -465,6 +517,11 @@ private fun MessageBubble(msg: ChatMessage, isMe: Boolean, isRead: Boolean, onRe
                         text = { Text("Переслать") },
                         leadingIcon = { Icon(Icons.Filled.Forward, contentDescription = null) },
                         onClick = { showMenu = false; onForward(msg) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Удалить") },
+                        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                        onClick = { showMenu = false; onDelete(msg) }
                     )
                 }
             }
@@ -546,14 +603,27 @@ private fun VoicePlayer(url: String, durationMs: Long, textColor: Color) {
 
 @Composable
 private fun VideoCirclePlayer(url: String) {
-    val context = LocalContext.current
+    // Видео-кружки НЕ должны запускаться автоматически при открытии чата —
+    // только по нажатию. Поэтому не стартуем воспроизведение в setOnPreparedListener,
+    // а лишь запоминаем готовый VideoView и запускаем/ставим на паузу по тапу.
     var isPlaying by remember { mutableStateOf(false) }
+    var videoView by remember { mutableStateOf<android.widget.VideoView?>(null) }
 
     Box(
         modifier = Modifier
             .size(180.dp)
             .clip(CircleShape)
-            .background(Color.Black),
+            .background(Color.Black)
+            .clickable {
+                val v = videoView ?: return@clickable
+                if (isPlaying) {
+                    v.pause()
+                    isPlaying = false
+                } else {
+                    v.start()
+                    isPlaying = true
+                }
+            },
         contentAlignment = Alignment.Center
     ) {
         AndroidView(
@@ -561,7 +631,12 @@ private fun VideoCirclePlayer(url: String) {
             factory = { ctx ->
                 android.widget.VideoView(ctx).apply {
                     setVideoURI(Uri.parse(url))
-                    setOnPreparedListener { it.isLooping = true; start(); isPlaying = true }
+                    setOnPreparedListener { /* готово к показу, но НЕ запускаем автоматически */ }
+                    setOnCompletionListener {
+                        isPlaying = false
+                        seekTo(0)
+                    }
+                    videoView = this
                 }
             }
         )
@@ -572,8 +647,37 @@ private fun VideoCirclePlayer(url: String) {
 }
 
 @Composable
+private fun DeleteMessageDialog(
+    canDeleteForEveryone: Boolean,
+    onDismiss: () -> Unit,
+    onDeleteForMe: () -> Unit,
+    onDeleteForEveryone: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Удалить сообщение?") },
+        text = { Text("Это действие нельзя отменить.") },
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                if (canDeleteForEveryone) {
+                    TextButton(onClick = onDeleteForEveryone) {
+                        Text("Удалить у всех", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                TextButton(onClick = onDeleteForMe) {
+                    Text("Удалить у меня")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
+}
+
+@Composable
 private fun ReplyPreviewBar(target: ChatMessage, onCancel: () -> Unit) {
-    Surface(color = Color(0xFFEDEBFF)) {
+    Surface(color = Color(0xFFEDEEFF)) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -684,24 +788,32 @@ private fun MessageInputBar(
             }
         }
 
-        Surface(color = Color.White, shadowElevation = 8.dp) {
+        Surface(color = MaterialTheme.colorScheme.background) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onToggleStickers) {
+                IconButton(onClick = onToggleStickers, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Filled.SentimentSatisfied, contentDescription = "Стикеры", tint = MaterialTheme.colorScheme.primary)
                 }
-                IconButton(onClick = onPickPhoto) {
+                Spacer(modifier = Modifier.width(2.dp))
+                IconButton(onClick = onPickPhoto, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Filled.PhotoCamera, contentDescription = "Фото", tint = MaterialTheme.colorScheme.primary)
                 }
+                Spacer(modifier = Modifier.width(3.dp))
 
                 OutlinedTextField(
                     value = value,
                     onValueChange = onValueChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Написать сообщение...") },
-                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    placeholder = { Text("Написать сообщение…", color = Color(0xFF999EAD), fontSize = 13.sp) },
+                    shape = RoundedCornerShape(18.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedBorderColor = Color(0xFFE5E7EE),
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedContainerColor = Color.White,
+                        focusedContainerColor = Color.White
+                    ),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     singleLine = true
                 )
@@ -710,7 +822,9 @@ private fun MessageInputBar(
                 if (value.isNotBlank()) {
                     FilledIconButton(
                         onClick = onSend,
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF6C5CE7))
+                        shape = CircleShape,
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.size(46.dp)
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить", tint = Color.White)
                     }
@@ -758,7 +872,7 @@ private fun MessageInputBar(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
-                            .background(if (isRecordingVoice || isRecordingVideo) Color.Red else Color(0xFF6C5CE7))
+                            .background(if (isRecordingVoice || isRecordingVideo) Color.Red else MaterialTheme.colorScheme.primary)
                             .then(holdModifier),
                         contentAlignment = Alignment.Center
                     ) {
