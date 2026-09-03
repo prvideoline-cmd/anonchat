@@ -16,13 +16,13 @@ package com.anonchat.app
 object Config {
 
     /** IP-адрес или домен вашего VPS. */
-    const val SERVER_HOST = "195.19.202.16"
+    const val SERVER_HOST = "195-19-202-16.sslip.io"
 
     /** Порт сервера (8080 по умолчанию в server/.env.example, 443 если через nginx+https). */
-    const val SERVER_PORT = 8080
+    const val SERVER_PORT = 443
 
     /** true — использовать wss:// и https:// (когда сервер закрыт сертификатом через nginx). */
-    const val USE_TLS = false
+    const val USE_TLS = true
 
     /**
      * Необязательный общий секрет — должен совпадать с CHAT_SECRET на сервере
