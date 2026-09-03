@@ -1,48 +1,59 @@
 package com.anonchat.app
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.lifecycle.viewmodel.initializer
-import androidx.lifecycle.viewmodel.viewModelFactory
-import com.anonchat.app.model.ChatMessage
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* результат нам не важен */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestNotificationPermissionIfNeeded()
 
-        val myName = AnonChatApplication.instance.sessionName
-
+        val openChatId = intent?.getStringExtra("openChatId")
         setContent {
             AnonChatTheme {
-                val factory = viewModelFactory {
-                    initializer { ChatViewModel(myName = myName) }
-                }
-                val viewModel: ChatViewModel = viewModel(factory = factory)
-                ChatScreen(myName = myName, viewModel = viewModel)
+                AppRoot(initialOpenChatId = openChatId)
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val openChatId = intent.getStringExtra("openChatId")
+        setContent {
+            AnonChatTheme {
+                AppRoot(initialOpenChatId = openChatId)
+            }
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
     }
@@ -58,157 +69,61 @@ fun AnonChatTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = colors, content = content)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ChatScreen(myName: String, viewModel: ChatViewModel) {
-    var input by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
-    val messages = viewModel.messages
-    val connected by viewModel.isConnected
-    val statusInfo by viewModel.statusInfo
+private sealed class Screen {
+    object NameEntry : Screen()
+    object ChatList : Screen()
+    data class Chat(val chatId: String, val title: String) : Screen()
+}
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+@Composable
+private fun AppRoot(initialOpenChatId: String?) {
+    val context = LocalContext.current
+    var session by remember { mutableStateOf(SessionStore.load(context)) }
+    var screen by remember { mutableStateOf<Screen>(if (session == null) Screen.NameEntry else Screen.ChatList) }
+    var pendingChatId by remember { mutableStateOf(initialOpenChatId) }
+
+    LaunchedEffect(session) {
+        val current = session
+        if (current != null) {
+            ContextCompat.startForegroundService(context, Intent(context, ConnectionService::class.java))
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("АнонЧат", fontWeight = FontWeight.Bold)
-                        Text(
-                            "Вы: $myName",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
-                        )
+    when (val current = screen) {
+        is Screen.NameEntry -> NameEntryScreen(onRegistered = { newSession ->
+            SessionStore.save(context, newSession)
+            session = newSession
+            screen = Screen.ChatList
+        })
+
+        is Screen.ChatList -> {
+            val activeSession = session
+            if (activeSession != null) {
+                ChatListScreen(
+                    session = activeSession,
+                    pendingOpenChatId = pendingChatId,
+                    onConsumedPending = { pendingChatId = null },
+                    onOpenChat = { chatId, title ->
+                        ConnectionService.openChatId = chatId
+                        screen = Screen.Chat(chatId, title)
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = Color.White
                 )
-            )
+            }
         }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(MaterialTheme.colorScheme.background)
-        ) {
-            if (!connected) {
-                Text(
-                    "Нет соединения с сервером" + (statusInfo?.let { ": $it" } ?: "") +
-                        "\nПроверьте адрес сервера в Config.kt и что сервер запущен.",
-                    color = Color.Red,
-                    fontSize = 13.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
+
+        is Screen.Chat -> {
+            val activeSession = session
+            if (activeSession != null) {
+                ChatScreen(
+                    session = activeSession,
+                    chatId = current.chatId,
+                    title = current.title,
+                    onBack = {
+                        ConnectionService.openChatId = null
+                        screen = Screen.ChatList
+                    }
                 )
-            }
-
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                itemsIndexed(messages) { _, msg ->
-                    MessageBubble(msg = msg, isMe = msg.name == myName)
-                }
-            }
-
-            MessageInputBar(
-                value = input,
-                onValueChange = { input = it },
-                onSend = {
-                    viewModel.send(input)
-                    input = ""
-                }
-            )
-        }
-    }
-}
-
-@Composable
-fun MessageBubble(msg: ChatMessage, isMe: Boolean) {
-    val bubbleColor = if (isMe) Color(0xFF6C5CE7) else Color.White
-    val textColor = if (isMe) Color.White else Color.Black
-    val alignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
-
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = alignment) {
-        Column(
-            horizontalAlignment = if (isMe) Alignment.End else Alignment.Start,
-            modifier = Modifier.widthIn(max = 280.dp)
-        ) {
-            if (!isMe) {
-                Text(
-                    text = msg.name,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(start = 12.dp, bottom = 2.dp)
-                )
-            }
-            Surface(
-                color = bubbleColor,
-                shape = RoundedCornerShape(16.dp),
-                shadowElevation = 1.dp
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    Text(text = msg.text, color = textColor, fontSize = 15.sp)
-                    Text(
-                        text = formatTime(msg.timestamp),
-                        color = textColor.copy(alpha = 0.6f),
-                        fontSize = 10.sp,
-                        modifier = Modifier.align(Alignment.End)
-                    )
-                }
             }
         }
     }
-}
-
-@Composable
-fun MessageInputBar(value: String, onValueChange: (String) -> Unit, onSend: () -> Unit) {
-    Surface(color = Color.White, shadowElevation = 8.dp) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Написать сообщение...") },
-                shape = RoundedCornerShape(24.dp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            FilledIconButton(
-                onClick = onSend,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Color(0xFF6C5CE7)
-                )
-            ) {
-                Icon(Icons.Filled.Send, contentDescription = "Отправить", tint = Color.White)
-            }
-        }
-    }
-}
-
-private fun formatTime(timestamp: Long): String {
-    if (timestamp == 0L) return ""
-    val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
-    return sdf.format(Date(timestamp))
 }

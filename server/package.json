@@ -1,0 +1,17 @@
+{
+  "name": "anonchat-server",
+  "version": "1.0.0",
+  "description": "Бэкенд для АнонЧат: WebSocket + REST, хранение истории сообщений на диске",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

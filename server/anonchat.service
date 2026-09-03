@@ -1,0 +1,25 @@
+; Пример systemd unit-файла, чтобы сервер работал в фоне и поднимался
+; автоматически после перезагрузки VPS.
+;
+; Как поставить:
+;   1. Скопируйте этот файл в /etc/systemd/system/anonchat.service
+;   2. Поправьте WorkingDirectory и User под себя
+;   3. sudo systemctl daemon-reload
+;   4. sudo systemctl enable --now anonchat
+;   5. Логи: journalctl -u anonchat -f
+
+[Unit]
+Description=AnonChat server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/anonchat/server
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+User=www-data
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+# Пример конфига nginx как обратного прокси перед сервером АнонЧата,
+# чтобы получить https/wss (шифрованное соединение) через свой домен.
+# Подставьте свой домен и получите сертификат командой:
+#   sudo certbot --nginx -d chat.ваш-домен.ru
+
+server {
+    listen 80;
+    server_name chat.ваш-домен.ru;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        # Нужно для WebSocket (/ws)
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 3600s;
+    }
+}
