@@ -77,7 +77,7 @@ class ConnectionService : Service() {
 
     private fun buildServiceNotification(): Notification {
         return NotificationCompat.Builder(this, NotificationHelper.CHANNEL_ID_SERVICE)
-            .setContentTitle("АнонЧат подключен")
+            .setContentTitle("TELL ME подключен")
             .setContentText("Вы получаете сообщения в реальном времени")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)

@@ -636,7 +636,7 @@ const pingInterval = setInterval(() => {
 wss.on("close", () => clearInterval(pingInterval));
 
 server.listen(PORT, () => {
-  console.log(`АнонЧат-сервер (v4) запущен на порту ${PORT}`);
+  console.log(`TELL ME — сервер (v4) запущен на порту ${PORT}`);
   console.log(`REST:  http://localhost:${PORT}/api/...`);
   console.log(`WS:    ws://localhost:${PORT}/ws?id=...&token=...`);
 });

@@ -63,7 +63,7 @@ fun NameEntryScreen(onRegistered: (Session) -> Unit) {
 
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Добро пожаловать в АнонЧат", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("Добро пожаловать в TELL ME", fontSize = 22.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(8.dp))
             Text("Придумайте имя и, при желании, аватар — они сохранятся на этом устройстве", fontSize = 14.sp)
             Spacer(modifier = Modifier.height(20.dp))

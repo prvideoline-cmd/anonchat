@@ -112,7 +112,7 @@ fun ChatListScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text("АнонЧат", fontWeight = FontWeight.Bold)
+                        Text("TELL ME", fontWeight = FontWeight.Bold)
                         Text("Ваш ID: ${session.id} · ${session.name}", fontSize = 12.sp)
                     }
                 },
